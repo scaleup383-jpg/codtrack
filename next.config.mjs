@@ -17,8 +17,4 @@ const nextConfig = {
     reactStrictMode: true,
 };
 
-// ✅ Change this:
 export default nextConfig;
-
-// ❌ From this:
-// module.exports = nextConfig;
