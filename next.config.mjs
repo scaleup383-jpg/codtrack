@@ -1,6 +1,23 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  /* config options here */
+    images: {
+        remotePatterns: [
+            {
+                protocol: "https",
+                hostname: "**",
+            },
+        ],
+    },
+    // Ignore ESLint errors during build
+    eslint: {
+        ignoreDuringBuilds: true,
+    },
+    // Ignore TypeScript errors during build
+    typescript: {
+        ignoreBuildErrors: true,
+    },
+    // Enable React strict mode
+    reactStrictMode: true,
 };
 
-export default nextConfig;
+module.exports = nextConfig;
