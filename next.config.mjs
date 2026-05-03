@@ -8,16 +8,17 @@ const nextConfig = {
             },
         ],
     },
-    // Ignore ESLint errors during build
     eslint: {
         ignoreDuringBuilds: true,
     },
-    // Ignore TypeScript errors during build
     typescript: {
         ignoreBuildErrors: true,
     },
-    // Enable React strict mode
     reactStrictMode: true,
 };
 
-module.exports = nextConfig;
+// ✅ Change this:
+export default nextConfig;
+
+// ❌ From this:
+// module.exports = nextConfig;
