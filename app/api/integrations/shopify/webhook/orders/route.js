@@ -6,21 +6,39 @@ const supabase = createClient(
 );
 
 export async function POST(req) {
-    const body = await req.json();
+    try {
+        const body = await req.json();
+        const shop = req.headers.get("x-shopify-shop-domain");
 
-    const order = body;
+        // Find the connection for this shop
+        const { data: connection } = await supabase
+            .from("integration_connections")
+            .select("tenant_id, integration_id")
+            .eq("credentials->>shop", shop)
+            .single();
 
-    await supabase.from("leads").insert({
-        customer: order.customer?.first_name || "unknown",
-        phone: order.phone,
-        city: order.shipping_address?.city,
-        product: order.line_items?.[0]?.name,
-        amount: order.total_price,
-        status: order.financial_status,
-        source: "shopify",
-        external_id: order.id,
-        date: new Date().toISOString(),
-    });
+        if (!connection) {
+            return new Response("Connection not found", { status: 404 });
+        }
 
-    return new Response("ok");
+        const order = body;
+
+        await supabase.from("leads").insert({
+            tenant_id: connection.tenant_id,
+            customer: `${order.customer?.first_name || ""} ${order.customer?.last_name || ""}`.trim() || "Unknown",
+            phone: order.phone || order.shipping_address?.phone || "",
+            city: order.shipping_address?.city || "",
+            product: order.line_items?.map(item => item.name).join(", ") || "",
+            amount: parseFloat(order.total_price) || 0,
+            status: "pending",
+            source: "shopify",
+            external_id: String(order.id),
+            date: new Date().toISOString(),
+        });
+
+        return new Response("ok", { status: 200 });
+    } catch (err) {
+        console.error("Shopify webhook error:", err);
+        return new Response("error", { status: 500 });
+    }
 }

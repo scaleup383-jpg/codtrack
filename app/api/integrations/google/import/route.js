@@ -1,49 +1,24 @@
 import { createClient } from "@supabase/supabase-js";
 
-// 🔐 Supabase init (safe JS version)
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-if (!url || !key) {
-    throw new Error("Missing Supabase environment variables");
-}
-
-const supabase = createClient(url, key);
-
-// 📥 Fetch Google Sheet
 async function fetchSheet(sheetId, sheetName, apiKey) {
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${sheetName}?key=${apiKey}`;
-
     const res = await fetch(url);
-
     if (!res.ok) {
         const err = await res.json();
         console.error("Google Sheets error:", err);
         return [];
     }
-
     const data = await res.json();
     return data.values || [];
 }
 
-// 🔄 Map sheet row → leads table
-function mapRow(row) {
-    const [
-        id,
-        customer,
-        source,
-        phone,
-        city,
-        product,
-        amount,
-        quantity,
-        status,
-        agent,
-        tracking,
-        date,
-    ] = row;
-
-    // skip empty rows
+function mapRow(row, rowIndex) {
+    const [id, customer, source, phone, city, product, amount, quantity, status, agent, tracking, date] = row;
     if (!phone && !customer) return null;
 
     return {
@@ -61,68 +36,66 @@ function mapRow(row) {
     };
 }
 
-// 🚀 API Route
 export async function POST(req) {
     try {
         const { connection } = await req.json();
 
         if (!connection) {
-            return Response.json(
-                { success: false, error: "Missing connection" },
-                { status: 400 }
-            );
+            return Response.json({ success: false, error: "Missing connection" }, { status: 400 });
         }
 
-        // 🔑 GET TENANT ID from connection
         const tenantId = connection.tenant_id;
-
         if (!tenantId) {
-            return Response.json(
-                { success: false, error: "No tenant_id found in connection" },
-                { status: 400 }
-            );
+            return Response.json({ success: false, error: "No tenant_id found" }, { status: 400 });
         }
 
         console.log("📥 Import for tenant:", tenantId);
 
         const config = connection.config;
-
         const sheetId = config.sheet_id;
         const sheetName = config.sheet_name || "Sheet1";
         const startLine = config.start_line || 2;
-
         const apiKey = process.env.GOOGLE_SHEETS_API_KEY;
 
         if (!sheetId || !apiKey) {
-            return Response.json(
-                { success: false, error: "Missing sheet_id or API key" },
-                { status: 400 }
-            );
+            return Response.json({ success: false, error: "Missing sheet_id or API key" }, { status: 400 });
         }
 
-        // 📥 Load sheet rows
+        // 📥 Load ALL sheet rows
         const rows = await fetchSheet(sheetId, sheetName, apiKey);
-
         if (!rows.length) {
-            return Response.json({
-                success: false,
-                message: "No data found in sheet",
-                imported: 0,
-            });
+            return Response.json({ success: false, message: "No data found in sheet", imported: 0 });
         }
 
         console.log("TOTAL ROWS:", rows.length);
 
-        // 🔄 Transform rows
-        const leads = rows
-            .slice(startLine - 1)
-            .map(mapRow)
+        // Get the last imported row index from config
+        const lastImportedRow = config.last_imported_row || (startLine - 1);
+        console.log("Last imported row:", lastImportedRow);
+
+        // 🔄 Only process NEW rows (after last imported row)
+        const newRows = rows.slice(lastImportedRow);
+        console.log("NEW ROWS TO PROCESS:", newRows.length);
+
+        if (newRows.length === 0) {
+            return Response.json({
+                success: true,
+                message: "No new data to import",
+                imported: 0,
+                last_imported_row: lastImportedRow,
+            });
+        }
+
+        // Map new rows
+        const leads = newRows
+            .map((row, i) => mapRow(row, lastImportedRow + i))
             .filter(Boolean);
 
         if (!leads.length) {
+            // Even if no valid leads, update the last row to avoid re-checking
             return Response.json({
-                success: false,
-                message: "No valid leads after mapping",
+                success: true,
+                message: "No valid leads in new rows",
                 imported: 0,
             });
         }
@@ -133,56 +106,76 @@ export async function POST(req) {
             tenant_id: tenantId,
         }));
 
-        console.log(`📝 Inserting ${leadsWithTenant.length} leads for tenant ${tenantId}`);
-
-        // 💾 Insert into Supabase
-        const { data, error } = await supabase
+        // Check for duplicates by phone number in the last hour
+        const recentPhones = leadsWithTenant.map(l => l.phone).filter(Boolean);
+        const { data: existingLeads } = await supabase
             .from("leads")
-            .insert(leadsWithTenant)
-            .select();
+            .select("phone")
+            .eq("tenant_id", tenantId)
+            .in("phone", recentPhones)
+            .gte("created_at", new Date(Date.now() - 60 * 60 * 1000).toISOString());
 
-        if (error) {
-            console.error("DB INSERT ERROR:", error);
-            return Response.json(
-                { success: false, error: error.message },
-                { status: 500 }
-            );
+        const existingPhones = new Set((existingLeads || []).map(l => l.phone));
+
+        // Filter out duplicates
+        const uniqueLeads = leadsWithTenant.filter(l => !existingPhones.has(l.phone));
+
+        console.log(`📝 Inserting ${uniqueLeads.length} new leads (${leadsWithTenant.length - uniqueLeads.length} duplicates skipped)`);
+
+        let imported = 0;
+        if (uniqueLeads.length > 0) {
+            const { data, error } = await supabase
+                .from("leads")
+                .insert(uniqueLeads)
+                .select();
+
+            if (error) {
+                console.error("DB INSERT ERROR:", error);
+                return Response.json({ success: false, error: error.message }, { status: 500 });
+            }
+
+            imported = data?.length || 0;
+            console.log(`✅ Imported ${imported} leads`);
         }
 
-        console.log(`✅ Imported ${data.length} leads`);
+        // Update the last imported row in config
+        const newLastRow = rows.length; // We've processed all rows now
+        const updatedConfig = {
+            ...config,
+            last_imported_row: newLastRow,
+            last_import_date: new Date().toISOString(),
+            total_imported: (config.total_imported || 0) + imported,
+        };
+
+        await supabase
+            .from("integration_connections")
+            .update({ config: updatedConfig })
+            .eq("id", connection.id);
 
         // 🔥 AUTO-ASSIGN after import
-        if (data.length > 0) {
+        if (imported > 0) {
             try {
                 const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
-                const assignResponse = await fetch(`${baseUrl}/api/assign-leads`, {
+                await fetch(`${baseUrl}/api/assign-leads`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        tenant_id: tenantId,
-                        mode: "smart"
-                    }),
+                    body: JSON.stringify({ tenant_id: tenantId, mode: "smart" }),
                 });
-                const assignResult = await assignResponse.json();
-                console.log("🔄 Auto-assign result:", assignResult);
             } catch (assignErr) {
-                console.warn("Auto-assign after import failed:", assignErr);
+                console.warn("Auto-assign failed:", assignErr);
             }
         }
 
-        // ✅ Success response
         return Response.json({
             success: true,
-            imported: data.length,
-            tenant_id: tenantId,
-            sample: data.slice(0, 2),
+            imported,
+            skipped: leadsWithTenant.length - imported,
+            last_imported_row: newLastRow,
+            total_rows: rows.length,
         });
 
     } catch (err) {
         console.error("IMPORT ERROR:", err);
-        return Response.json(
-            { success: false, error: err.message },
-            { status: 500 }
-        );
+        return Response.json({ success: false, error: err.message }, { status: 500 });
     }
 }
