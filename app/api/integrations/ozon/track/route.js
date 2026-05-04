@@ -84,11 +84,11 @@ export async function POST(req) {
 function mapOzonTrackingStatus(track) {
     const status = (track.status || track.STATUS || "").toLowerCase();
     const mapping = {
-        "delivered": "delivered", "livré": "delivered",
+        "delivered": "delivered", "livrï¿½": "delivered",
         "in_transit": "in_transit", "en_cours": "in_transit",
         "pending": "pending", "en_attente": "pending",
-        "cancelled": "cancelled", "annulé": "cancelled",
-        "returned": "returned", "retourné": "returned",
+        "cancelled": "cancelled", "annulï¿½": "cancelled",
+        "returned": "returned", "retournï¿½": "returned",
         "out_for_delivery": "out_for_delivery", "en_livraison": "out_for_delivery",
     };
     return mapping[status] || "in_transit";
